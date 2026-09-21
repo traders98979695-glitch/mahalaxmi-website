@@ -34,6 +34,7 @@ import {
   DialogTrigger,
 } from "./components/ui/dialog";
 import { Toaster, toast } from "./components/ui/sonner";
+import { supabase } from "./lib/supabaseClient";
 import "./App.css";
 
 // react/jsx-dev-runtime only exports jsxDEV in development builds; production
@@ -1192,7 +1193,8 @@ const EnquiryForm = ({
     }));
     setDraft(null);
   };
-  const submit = event => {
+  const [submitting, setSubmitting] = useState(false);
+  const submit = async event => {
     event.preventDefault();
     const next = {};
     if (values.name.trim().length < 2) next.name = 'Please enter your full name.';
@@ -1205,6 +1207,22 @@ const EnquiryForm = ({
     if (Object.keys(next).length) {
       var _document$getElementB;
       (_document$getElementB = document.getElementById(`enquiry-${Object.keys(next)[0]}`)) === null || _document$getElementB === void 0 ? void 0 : _document$getElementB.focus();
+      return;
+    }
+    // Save a durable backend record first — if the visitor's device has no
+    // email app configured, or they close the tab before sending, the
+    // enquiry still exists here rather than being lost entirely.
+    setSubmitting(true);
+    const { error } = await supabase.from('enquiries').insert({
+      name: values.name.trim(),
+      email: values.email.trim(),
+      phone: values.phone.trim(),
+      project_type: values.type,
+      message: values.message.trim()
+    });
+    setSubmitting(false);
+    if (error) {
+      toast.error('Could not save your enquiry — please try again, or email us directly.');
       return;
     }
     const body = `Hello Mahalaxmi Construction,\n\n${values.message.trim()}\n\nProject type: ${values.type}\nName: ${values.name.trim()}\nEmail: ${values.email.trim()}\nPhone: ${values.phone.trim()}\n\nSent from the Mahalaxmi Construction website.`;
@@ -1333,8 +1351,9 @@ const EnquiryForm = ({
       }), jsxDEV(Button, {
         type: "submit",
         className: "button button-orange",
+        disabled: submitting,
         "data-testid": "enquiry-submit",
-        children: ["Prepare enquiry ", jsxDEV(ArrowUpRight, {
+        children: [submitting ? "Saving…" : "Prepare enquiry ", !submitting && jsxDEV(ArrowUpRight, {
         })]
       })]
     }), draft && jsxDEV("div", {
