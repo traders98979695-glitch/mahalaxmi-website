@@ -1,0 +1,68 @@
+name: Supabase Keep-Alive
+
+# Pings the Supabase database on a schedule so the project never sits
+# idle for 7 days and gets auto-paused on the free tier.
+# Supabase requires an actual database query (not just any HTTP hit)
+# to count as activity, so this queries the "enquiries" table.
+# (RLS on "enquiries" only allows the anon key to INSERT, so this read
+# returns an empty array [] with HTTP 200 - that is expected, it never
+# exposes any enquiry, and it still counts as database activity.)
+
+on:
+  schedule:
+    # Runs every 3 days at 03:00 UTC - a safe margin under the 7-day
+    # pause window even if one run is skipped, delayed, or fails.
+    - cron: "0 3 */3 * *"
+  workflow_dispatch: {}  # lets you trigger it manually from the Actions tab to test
+
+# Needed so the "keep this workflow alive" commit step below can push.
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Query Supabase to reset the inactivity timer
+        run: |
+          http_code=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/enquiries?select=*&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
+
+          echo "HTTP status: $http_code"
+          echo "Response body:"
+          cat /tmp/response.json
+          echo ""
+
+          # Fail loudly (red X + email) on anything other than a 2xx response,
+          # not just when curl gets no response at all.
+          if [ -z "$http_code" ] || [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Ping did not succeed (HTTP $http_code) - failing the job so you get notified."
+            exit 1
+          fi
+
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - ping OK (HTTP $http_code)" >> keepalive-log.txt
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Keep this workflow itself from being auto-disabled
+        # GitHub disables scheduled workflows after 60 days with no repo
+        # activity. Committing the log file every successful run counts
+        # as activity, so the schedule never goes stale.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Keep only the last 20 entries so the log file doesn't grow forever.
+          tail -n 20 keepalive-log.txt > keepalive-log.tmp && mv keepalive-log.tmp keepalive-log.txt
+          git add keepalive-log.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: keep-alive ping $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "No change to commit."
+          fi
